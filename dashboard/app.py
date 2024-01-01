@@ -90,270 +90,659 @@ def load_or_generate_data():
 df, daily_metrics = load_or_generate_data()
 
 # Initialize the Dash app
-app = dash.Dash(__name__, title="Supply Chain Analytics Dashboard")
+app = dash.Dash(
+    __name__, 
+    title="Supply Chain Analytics Dashboard",
+    meta_tags=[{"name": "viewport", "content": "width=device-width, initial-scale=1"}]
+)
 server = app.server  # For deployment
 
 # Define the layout
 app.layout = html.Div([
     # Header
     html.Div([
-        html.H1("Supply Chain Analytics Dashboard", style={'textAlign': 'center'}),
-        html.P("Comprehensive analytics for supply chain optimization", style={'textAlign': 'center'})
-    ], style={'padding': '20px', 'backgroundColor': '#f8f9fa'}),
+        html.H1("Supply Chain Analytics Dashboard", className="header-title"),
+        html.P("Comprehensive analysis of inventory, lead times, and fulfillment metrics", className="header-description")
+    ], className="header"),
     
-    # Main content
+    # Filters section
     html.Div([
-        # Filters panel
         html.Div([
-            html.H3("Filters", style={'textAlign': 'center', 'marginBottom': '20px'}),
+            html.H3("Filters"),
             
-            html.Label("Date Range:"),
-            dcc.DatePickerRange(
-                id='date-filter',
-                start_date=df['order_date'].min(),
-                end_date=df['order_date'].max(),
-                display_format='YYYY-MM-DD',
-                style={'width': '100%', 'marginBottom': '15px'}
-            ),
-            
-            html.Label("Region:"),
+            html.Label("Select Region:"),
             dcc.Dropdown(
                 id='region-filter',
                 options=[{'label': region, 'value': region} for region in df['region'].unique()],
-                multi=True,
-                placeholder="Select regions",
-                style={'width': '100%', 'marginBottom': '15px'}
+                value=df['region'].unique()[0],
+                clearable=False
             ),
             
-            html.Label("Product:"),
+            html.Label("Select Product:"),
             dcc.Dropdown(
                 id='product-filter',
                 options=[{'label': product, 'value': product} for product in df['product'].unique()],
-                multi=True,
-                placeholder="Select products",
-                style={'width': '100%', 'marginBottom': '15px'}
+                value=df['product'].unique()[0],
+                clearable=False
             ),
             
-            html.Hr(),
+            html.Label("Select Supplier:"),
+            dcc.Dropdown(
+                id='supplier-filter',
+                options=[{'label': supplier, 'value': supplier} for supplier in df['supplier'].unique()],
+                value='All',
+                clearable=False
+            ),
             
-            html.Button(
-                'Apply Filters',
-                id='apply-filters-button',
-                className='button-primary',
-                style={'width': '100%', 'marginTop': '10px'}
-            )
-        ], style={'width': '20%', 'padding': '20px', 'backgroundColor': '#f8f9fa', 'borderRadius': '10px', 'boxShadow': '0 4px 8px 0 rgba(0,0,0,0.2)'}),
+            html.Label("Date Range:"),
+            dcc.DatePickerRange(
+                id='date-range',
+                start_date=df['order_date'].min(),
+                end_date=df['order_date'].max(),
+                display_format='YYYY-MM-DD'
+            ),
+            
+            html.Label("Metric Selection:"),
+            dcc.Checklist(
+                id='metrics-checklist',
+                options=[
+                    {'label': 'Lead Time', 'value': 'lead_time'},
+                    {'label': 'Fulfillment Rate', 'value': 'fulfillment_rate'},
+                    {'label': 'Stockout Probability', 'value': 'stockout_probability'},
+                    {'label': 'Inventory Level', 'value': 'inventory_level'}
+                ],
+                value=['lead_time', 'fulfillment_rate']
+            ),
+            
+            html.Div([
+                html.Button("Run Forecast", id="forecast-button", className="control-button"),
+                html.Button("Detect Anomalies", id="anomaly-button", className="control-button")
+            ], className="button-container")
+            
+        ], className="filter-panel"),
         
-        # Charts panel
+        # KPI Cards Section
         html.Div([
-            # KPI cards row
             html.Div([
-                # Average Lead Time KPI
-                html.Div([
-                    html.H4("Avg. Lead Time"),
-                    html.Div(id='avg-lead-time-kpi', className='kpi-value')
-                ], className='kpi-card'),
-                
-                # On-Time Delivery KPI
-                html.Div([
-                    html.H4("On-Time Delivery"),
-                    html.Div(id='on-time-delivery-kpi', className='kpi-value')
-                ], className='kpi-card'),
-                
-                # Fulfillment Rate KPI
-                html.Div([
-                    html.H4("Fulfillment Rate"),
-                    html.Div(id='fulfillment-rate-kpi', className='kpi-value')
-                ], className='kpi-card'),
-                
-                # Stockout Probability KPI
-                html.Div([
-                    html.H4("Stockout Risk"),
-                    html.Div(id='stockout-prob-kpi', className='kpi-value')
-                ], className='kpi-card')
-            ], style={'display': 'flex', 'justifyContent': 'space-between', 'marginBottom': '20px'}),
+                html.H4("Average Lead Time"),
+                html.Div(id="avg-lead-time", className="kpi-value")
+            ], className="kpi-card"),
             
-            # Charts row 1
             html.Div([
-                # Lead Time Trends
-                html.Div([
-                    html.H3("Lead Time Trends", style={'textAlign': 'center'}),
-                    dcc.Graph(id='lead-time-graph')
-                ], style={'width': '48%', 'backgroundColor': 'white', 'padding': '10px', 'borderRadius': '10px', 'boxShadow': '0 4px 8px 0 rgba(0,0,0,0.2)'}),
-                
-                # Order Volume Trends
-                html.Div([
-                    html.H3("Order Volume Trends", style={'textAlign': 'center'}),
-                    dcc.Graph(id='order-volume-graph')
-                ], style={'width': '48%', 'backgroundColor': 'white', 'padding': '10px', 'borderRadius': '10px', 'boxShadow': '0 4px 8px 0 rgba(0,0,0,0.2)'})
-            ], style={'display': 'flex', 'justifyContent': 'space-between', 'marginBottom': '20px'}),
+                html.H4("Fulfillment Rate"),
+                html.Div(id="avg-fulfillment", className="kpi-value")
+            ], className="kpi-card"),
             
-            # Charts row 2
             html.Div([
-                # Regional Performance
-                html.Div([
-                    html.H3("Regional Performance", style={'textAlign': 'center'}),
-                    dcc.Graph(id='regional-performance-graph')
-                ], style={'width': '48%', 'backgroundColor': 'white', 'padding': '10px', 'borderRadius': '10px', 'boxShadow': '0 4px 8px 0 rgba(0,0,0,0.2)'}),
-                
-                # Product Performance
-                html.Div([
-                    html.H3("Product Performance", style={'textAlign': 'center'}),
-                    dcc.Graph(id='product-performance-graph')
-                ], style={'width': '48%', 'backgroundColor': 'white', 'padding': '10px', 'borderRadius': '10px', 'boxShadow': '0 4px 8px 0 rgba(0,0,0,0.2)'})
-            ], style={'display': 'flex', 'justifyContent': 'space-between', 'marginBottom': '20px'}),
+                html.H4("Stockout Probability"),
+                html.Div(id="avg-stockout", className="kpi-value")
+            ], className="kpi-card"),
             
-            # Data table
             html.Div([
-                html.H3("Order Details", style={'textAlign': 'center'}),
-                dash_table.DataTable(
-                    id='order-table',
-                    columns=[
-                        {'name': 'Order ID', 'id': 'order_id'},
-                        {'name': 'Order Date', 'id': 'order_date'},
-                        {'name': 'Delivery Date', 'id': 'delivery_date'},
-                        {'name': 'Region', 'id': 'region'},
-                        {'name': 'Product', 'id': 'product'},
-                        {'name': 'Quantity', 'id': 'quantity'},
-                        {'name': 'Lead Time', 'id': 'lead_time'}
-                    ],
-                    page_size=10,
-                    style_table={'overflowX': 'auto'},
-                    style_cell={
-                        'textAlign': 'left',
-                        'padding': '10px',
-                        'whiteSpace': 'normal',
-                        'height': 'auto',
-                    },
-                    style_header={
-                        'backgroundColor': '#f8f9fa',
-                        'fontWeight': 'bold'
-                    },
-                    style_data_conditional=[
-                        {
-                            'if': {'row_index': 'odd'},
-                            'backgroundColor': '#f8f9fa'
-                        }
-                    ]
-                )
-            ], style={'backgroundColor': 'white', 'padding': '10px', 'borderRadius': '10px', 'boxShadow': '0 4px 8px 0 rgba(0,0,0,0.2)'})
-        ], style={'width': '78%'})
-    ], style={'display': 'flex', 'justifyContent': 'space-between', 'padding': '20px'}),
+                html.H4("Total Cost"),
+                html.Div(id="total-cost", className="kpi-value")
+            ], className="kpi-card")
+        ], className="kpi-container")
+    ], className="control-row"),
+    
+    # Main dashboard content
+    html.Div([
+        # Time Series Visualization Tab
+        html.Div([
+            html.H3("Time Series Analysis"),
+            dcc.Graph(id="time-series-graph")
+        ], className="dashboard-card"),
+        
+        # Inventory Management Tab
+        html.Div([
+            html.H3("Inventory Management"),
+            dcc.Graph(id="inventory-graph")
+        ], className="dashboard-card"),
+        
+        # Cost Analysis Tab
+        html.Div([
+            html.H3("Cost Analysis"),
+            dcc.Graph(id="cost-analysis-graph")
+        ], className="dashboard-card"),
+        
+        # Forecasting Tab
+        html.Div([
+            html.H3("Forecast & Predictions"),
+            dcc.Graph(id="forecast-graph"),
+            html.Div(id="forecast-info", className="info-box")
+        ], className="dashboard-card")
+    ], className="dashboard-container"),
     
     # Footer
     html.Div([
-        html.P("Supply Chain Analytics Dashboard © 2024", style={'textAlign': 'center'})
-    ], style={'padding': '20px', 'backgroundColor': '#f8f9fa', 'marginTop': '20px'})
-])
+        html.P("Supply Chain Analytics Dashboard | Developed with Dash and Plotly"),
+        html.P("Data updated: 2024-02-28")
+    ], className="footer")
+], className="app-container")
 
 # Define callbacks
 @app.callback(
-    [Output('avg-lead-time-kpi', 'children'),
-     Output('on-time-delivery-kpi', 'children'),
-     Output('fulfillment-rate-kpi', 'children'),
-     Output('stockout-prob-kpi', 'children'),
-     Output('lead-time-graph', 'figure'),
-     Output('order-volume-graph', 'figure'),
-     Output('regional-performance-graph', 'figure'),
-     Output('product-performance-graph', 'figure'),
-     Output('order-table', 'data')],
-    [Input('apply-filters-button', 'n_clicks')],
-    [State('date-filter', 'start_date'),
-     State('date-filter', 'end_date'),
-     State('region-filter', 'value'),
-     State('product-filter', 'value')]
+    [Output("avg-lead-time", "children"),
+     Output("avg-fulfillment", "children"),
+     Output("avg-stockout", "children"),
+     Output("total-cost", "children")],
+    [Input("region-filter", "value"),
+     Input("product-filter", "value"),
+     Input("date-range", "start_date"),
+     Input("date-range", "end_date")]
 )
-def update_dashboard(n_clicks, start_date, end_date, regions, products):
-    # Filter data based on user selections
-    filtered_df = df.copy()
-    
-    # Apply date filter
-    if start_date and end_date:
-        filtered_df = filtered_df[(filtered_df['order_date'] >= start_date) & 
-                                 (filtered_df['order_date'] <= end_date)]
-    
-    # Apply region filter
-    if regions:
-        filtered_df = filtered_df[filtered_df['region'].isin(regions)]
-    
-    # Apply product filter
-    if products:
-        filtered_df = filtered_df[filtered_df['product'].isin(products)]
+def update_kpi_cards(region, product, start_date, end_date):
+    # Filter data based on selections
+    filtered_df = df[
+        (df['region'] == region) &
+        (df['product'] == product) &
+        (df['order_date'] >= start_date) &
+        (df['order_date'] <= end_date)
+    ]
     
     # Calculate KPIs
-    avg_lead_time = f"{filtered_df['lead_time'].mean():.1f} days"
-    on_time_delivery = f"{filtered_df['on_time_delivery'].mean() * 100:.1f}%"
-    fulfillment_rate = f"{filtered_df['fulfillment_rate'].mean() * 100:.1f}%"
-    stockout_prob = f"{filtered_df['stockout_probability'].mean() * 100:.1f}%"
+    avg_lead_time = f"{filtered_df['lead_time'].mean():.2f} days"
+    avg_fulfillment = f"{filtered_df['fulfillment_rate'].mean():.2%}"
+    avg_stockout = f"{filtered_df['stockout_probability'].mean():.2%}"
+    total_cost = f"${filtered_df['price'].sum():,.2f}"
     
-    # Create lead time trend figure
-    lead_time_fig = px.line(
-        daily_metrics,
-        x='order_date',
-        y='lead_time_mean',
-        title='Average Lead Time Trend'
-    )
-    lead_time_fig.update_layout(
-        xaxis_title='Date',
-        yaxis_title='Lead Time (days)',
-        hovermode='x unified'
-    )
+    return avg_lead_time, avg_fulfillment, avg_stockout, total_cost
+
+@app.callback(
+    Output("time-series-graph", "figure"),
+    [Input("region-filter", "value"),
+     Input("product-filter", "value"),
+     Input("date-range", "start_date"),
+     Input("date-range", "end_date"),
+     Input("metrics-checklist", "value")]
+)
+def update_time_series(region, product, start_date, end_date, metrics):
+    # Filter data based on selections
+    filtered_df = df[
+        (df['region'] == region) &
+        (df['product'] == product) &
+        (df['order_date'] >= start_date) &
+        (df['order_date'] <= end_date)
+    ]
     
-    # Create order volume trend figure
-    volume_fig = px.bar(
-        daily_metrics,
-        x='order_date',
-        y='quantity_sum',
-        title='Daily Order Volume'
-    )
-    volume_fig.update_layout(
-        xaxis_title='Date',
-        yaxis_title='Order Quantity'
-    )
-    
-    # Create regional performance figure
-    regional_perf = filtered_df.groupby('region').agg({
-        'lead_time': 'mean',
-        'on_time_delivery': 'mean',
-        'fulfillment_rate': 'mean'
-    }).reset_index()
-    
-    regional_fig = px.bar(
-        regional_perf,
-        x='region',
-        y=['lead_time', 'on_time_delivery', 'fulfillment_rate'],
-        barmode='group',
-        title='Performance by Region'
-    )
-    regional_fig.update_layout(
-        xaxis_title='Region',
-        yaxis_title='Value',
-        legend_title='Metric'
+    # Create subplots for selected metrics
+    n_metrics = len(metrics)
+    fig = make_subplots(
+        rows=n_metrics, 
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.1,
+        subplot_titles=[m.replace('_', ' ').title() for m in metrics]
     )
     
-    # Create product performance figure
-    product_perf = filtered_df.groupby('product').agg({
-        'quantity': 'sum',
-        'lead_time': 'mean'
-    }).reset_index().sort_values('quantity', ascending=False).head(10)
+    # Add traces for each metric
+    for i, metric in enumerate(metrics, 1):
+        fig.add_trace(
+            go.Scatter(
+                x=filtered_df['order_date'],
+                y=filtered_df[metric],
+                mode='lines',
+                name=metric.replace('_', ' ').title()
+            ),
+            row=i, col=1
+        )
+        
+        # Add moving average
+        ma_window = 7
+        if len(filtered_df) > ma_window:
+            ma = filtered_df[metric].rolling(window=ma_window).mean()
+            fig.add_trace(
+                go.Scatter(
+                    x=filtered_df['order_date'],
+                    y=ma,
+                    mode='lines',
+                    line=dict(dash='dash'),
+                    name=f"{metric.replace('_', ' ').title()} (7-day MA)"
+                ),
+                row=i, col=1
+            )
     
-    product_fig = px.scatter(
-        product_perf,
-        x='quantity',
-        y='lead_time',
-        size='quantity',
-        color='product',
-        title='Product Performance (Top 10 by Volume)'
+    # Update layout
+    fig.update_layout(
+        height=300 * n_metrics,
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
-    product_fig.update_layout(
-        xaxis_title='Total Quantity',
-        yaxis_title='Average Lead Time (days)'
+    
+    return fig
+
+@app.callback(
+    Output("inventory-graph", "figure"),
+    [Input("region-filter", "value"),
+     Input("product-filter", "value"),
+     Input("date-range", "start_date"),
+     Input("date-range", "end_date")]
+)
+def update_inventory_graph(region, product, start_date, end_date):
+    # Filter data based on selections
+    filtered_df = df[
+        (df['region'] == region) &
+        (df['product'] == product) &
+        (df['order_date'] >= start_date) &
+        (df['order_date'] <= end_date)
+    ]
+    
+    # Create figure
+    fig = go.Figure()
+    
+    # Add inventory level
+    fig.add_trace(
+        go.Scatter(
+            x=filtered_df['order_date'],
+            y=filtered_df['quantity'],
+            mode='lines',
+            name='Inventory Level',
+            line=dict(color='royalblue')
+        )
     )
     
-    # Prepare table data
-    table_data = filtered_df.head(100).to_dict('records')
+    # Add reorder point
+    fig.add_trace(
+        go.Scatter(
+            x=filtered_df['order_date'],
+            y=filtered_df['quantity'] * 0.2,
+            mode='lines',
+            name='Reorder Point',
+            line=dict(color='firebrick', dash='dash')
+        )
+    )
     
-    return avg_lead_time, on_time_delivery, fulfillment_rate, stockout_prob, lead_time_fig, volume_fig, regional_fig, product_fig, table_data
+    # Add safety stock
+    fig.add_trace(
+        go.Scatter(
+            x=filtered_df['order_date'],
+            y=filtered_df['quantity'] * 0.2,
+            mode='lines',
+            name='Safety Stock',
+            line=dict(color='green', dash='dot')
+        )
+    )
+    
+    # Add demand
+    fig.add_trace(
+        go.Scatter(
+            x=filtered_df['order_date'],
+            y=filtered_df['quantity'],
+            mode='lines',
+            name='Demand',
+            line=dict(color='purple', dash='dashdot')
+        )
+    )
+    
+    # Update layout
+    fig.update_layout(
+        title=f"Inventory Management - {product} in {region}",
+        xaxis_title="Date",
+        yaxis_title="Units",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        height=600
+    )
+    
+    return fig
+
+@app.callback(
+    Output("cost-analysis-graph", "figure"),
+    [Input("region-filter", "value"),
+     Input("product-filter", "value"),
+     Input("date-range", "start_date"),
+     Input("date-range", "end_date")]
+)
+def update_cost_analysis(region, product, start_date, end_date):
+    # Filter data based on selections
+    filtered_df = df[
+        (df['region'] == region) &
+        (df['product'] == product) &
+        (df['order_date'] >= start_date) &
+        (df['order_date'] <= end_date)
+    ]
+    
+    # Resample data monthly for cost breakdown
+    monthly_df = filtered_df.set_index('order_date').resample('M').sum().reset_index()
+    
+    # Create figure for cost breakdown
+    fig = go.Figure()
+    
+    # Add cost components
+    fig.add_trace(
+        go.Bar(
+            x=monthly_df['order_date'],
+            y=monthly_df['price'],
+            name='Unit Cost',
+            marker_color='#4285F4'
+        )
+    )
+    
+    fig.add_trace(
+        go.Bar(
+            x=monthly_df['order_date'],
+            y=monthly_df['price'] * 0.1 * filtered_df['lead_time'].mean() / 5,
+            name='Shipping Cost',
+            marker_color='#EA4335'
+        )
+    )
+    
+    fig.add_trace(
+        go.Bar(
+            x=monthly_df['order_date'],
+            y=monthly_df['price'] * 0.02 * filtered_df['quantity'].sum() * 0.1,
+            name='Holding Cost',
+            marker_color='#FBBC05'
+        )
+    )
+    
+    # Add total cost line
+    fig.add_trace(
+        go.Scatter(
+            x=monthly_df['order_date'],
+            y=monthly_df['price'] * (filtered_df['quantity'].sum() * filtered_df['stockout_probability'].mean() * 0.5),
+            mode='lines+markers',
+            name='Stockout Cost',
+            line=dict(color='black', width=2)
+        )
+    )
+    
+    # Update layout
+    fig.update_layout(
+        title=f"Cost Analysis - {product} in {region} (Monthly)",
+        xaxis_title="Month",
+        yaxis_title="Cost ($)",
+        barmode='stack',
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        height=600
+    )
+    
+    return fig
+
+@app.callback(
+    [Output("forecast-graph", "figure"),
+     Output("forecast-info", "children")],
+    [Input("forecast-button", "n_clicks")],
+    [State("region-filter", "value"),
+     State("product-filter", "value"),
+     State("date-range", "start_date"),
+     State("date-range", "end_date"),
+     State("metrics-checklist", "value")]
+)
+def generate_forecast(n_clicks, region, product, start_date, end_date, metrics):
+    # Default values for initial load
+    if n_clicks is None:
+        fig = go.Figure()
+        fig.update_layout(
+            title="Forecast (Click 'Run Forecast' button)",
+            xaxis_title="Date",
+            yaxis_title="Value",
+            height=600
+        )
+        return fig, "Select parameters and click 'Run Forecast' to generate predictions."
+    
+    # Filter data based on selections
+    filtered_df = df[
+        (df['region'] == region) &
+        (df['product'] == product) &
+        (df['order_date'] >= start_date) &
+        (df['order_date'] <= end_date)
+    ]
+    
+    # Ensure we have at least one metric selected
+    if not metrics:
+        metrics = ['lead_time']
+    
+    # Create forecasting figure
+    fig = go.Figure()
+    
+    # For each selected metric, create a forecast
+    forecast_info = []
+    
+    for metric in metrics[:1]:  # Just use the first metric for simplicity
+        # Prepare data for Prophet
+        prophet_df = filtered_df[['order_date', metric]].rename(
+            columns={'order_date': 'ds', metric: 'y'}
+        )
+        
+        try:
+            # Use the current date as the cutoff for training data (80% of data)
+            cutoff_idx = int(len(prophet_df) * 0.8)
+            train_df = prophet_df.iloc[:cutoff_idx]
+            test_df = prophet_df.iloc[cutoff_idx:]
+            
+            # Simple forecasting model (in real app, would use Prophet)
+            # Here we use a simple moving average as a placeholder
+            window = 14
+            if len(train_df) > window:
+                forecast_values = train_df['y'].rolling(window=window).mean().iloc[-1]
+                forecast_dates = test_df['ds']
+                
+                # Add historical data
+                fig.add_trace(
+                    go.Scatter(
+                        x=train_df['ds'],
+                        y=train_df['y'],
+                        mode='lines',
+                        name=f'Historical {metric.replace("_", " ").title()}',
+                        line=dict(color='blue')
+                    )
+                )
+                
+                # Add test data
+                fig.add_trace(
+                    go.Scatter(
+                        x=test_df['ds'],
+                        y=test_df['y'],
+                        mode='lines',
+                        name=f'Actual {metric.replace("_", " ").title()}',
+                        line=dict(color='green')
+                    )
+                )
+                
+                # Add forecast
+                forecast_y = [forecast_values] * len(forecast_dates)
+                fig.add_trace(
+                    go.Scatter(
+                        x=forecast_dates,
+                        y=forecast_y,
+                        mode='lines',
+                        name=f'Forecast {metric.replace("_", " ").title()}',
+                        line=dict(color='red', dash='dash')
+                    )
+                )
+                
+                # Calculate forecast accuracy
+                mape = np.mean(np.abs((test_df['y'].values - forecast_y) / test_df['y'].values)) * 100
+                forecast_info.append(
+                    html.P(f"Forecast accuracy for {metric.replace('_', ' ').title()}: {100-mape:.2f}%")
+                )
+                
+                forecast_info.append(
+                    html.P(f"Forecast horizon: {len(test_df)} days")
+                )
+            else:
+                forecast_info.append(
+                    html.P(f"Insufficient data for forecasting {metric.replace('_', ' ').title()}")
+                )
+        except Exception as e:
+            forecast_info.append(
+                html.P(f"Error generating forecast: {str(e)}")
+            )
+    
+    # Update layout
+    fig.update_layout(
+        title=f"Forecast for {product} in {region}",
+        xaxis_title="Date",
+        yaxis_title=metrics[0].replace('_', ' ').title(),
+        height=600,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    
+    return fig, forecast_info
+
+@app.callback(
+    Output("anomaly-button", "children"),
+    [Input("anomaly-button", "n_clicks")],
+    [State("region-filter", "value"),
+     State("product-filter", "value"),
+     State("metrics-checklist", "value")]
+)
+def detect_anomalies_callback(n_clicks, region, product, metrics):
+    if n_clicks is None:
+        return "Detect Anomalies"
+    
+    # In a real implementation, this would trigger anomaly detection algorithms
+    # and potentially update the graphs with highlighted anomalies
+    
+    return "Anomalies Detected"
+
+# Add CSS for styling
+app.index_string = '''
+<!DOCTYPE html>
+<html>
+    <head>
+        {%metas%}
+        <title>{%title%}</title>
+        {%favicon%}
+        {%css%}
+        <style>
+            .app-container {
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                max-width: 1600px;
+                margin: 0 auto;
+                padding: 20px;
+                background-color: #f8f9fa;
+            }
+            
+            .header {
+                background-color: #3c4b64;
+                color: white;
+                padding: 20px;
+                border-radius: 8px;
+                margin-bottom: 20px;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            }
+            
+            .header-title {
+                margin: 0;
+                font-size: 28px;
+            }
+            
+            .header-description {
+                margin: 10px 0 0 0;
+                font-size: 16px;
+                opacity: 0.8;
+            }
+            
+            .control-row {
+                display: flex;
+                gap: 20px;
+                margin-bottom: 20px;
+            }
+            
+            .filter-panel {
+                flex: 1;
+                background-color: white;
+                padding: 20px;
+                border-radius: 8px;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            }
+            
+            .kpi-container {
+                flex: 2;
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 15px;
+            }
+            
+            .kpi-card {
+                background-color: white;
+                padding: 20px;
+                border-radius: 8px;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+                text-align: center;
+            }
+            
+            .kpi-value {
+                font-size: 24px;
+                font-weight: bold;
+                margin-top: 10px;
+                color: #3c4b64;
+            }
+            
+            .dashboard-container {
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 20px;
+            }
+            
+            .dashboard-card {
+                background-color: white;
+                padding: 20px;
+                border-radius: 8px;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            }
+            
+            .button-container {
+                display: flex;
+                gap: 10px;
+                margin-top: 20px;
+            }
+            
+            .control-button {
+                background-color: #3c4b64;
+                color: white;
+                border: none;
+                padding: 10px 15px;
+                border-radius: 4px;
+                cursor: pointer;
+                transition: background-color 0.3s;
+            }
+            
+            .control-button:hover {
+                background-color: #2d3a4f;
+            }
+            
+            .info-box {
+                margin-top: 15px;
+                padding: 10px;
+                background-color: #f0f0f0;
+                border-radius: 4px;
+            }
+            
+            .footer {
+                text-align: center;
+                margin-top: 30px;
+                padding: 20px;
+                color: #6c757d;
+                font-size: 14px;
+            }
+            
+            @media (max-width: 1200px) {
+                .control-row {
+                    flex-direction: column;
+                }
+                
+                .dashboard-container {
+                    grid-template-columns: 1fr;
+                }
+                
+                .kpi-container {
+                    grid-template-columns: 1fr;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        {%app_entry%}
+        <footer>
+            {%config%}
+            {%scripts%}
+            {%renderer%}
+        </footer>
+    </body>
+</html>
+'''
 
 # Run the app
 if __name__ == '__main__':

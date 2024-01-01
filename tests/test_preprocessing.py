@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import pytest
 from datetime import datetime, timedelta
+import unittest
 
 # Add the src directory to the path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -110,10 +111,70 @@ def test_aggregate_metrics(sample_data):
         assert abs(first_day_metrics['lead_time_mean'].iloc[0] - first_day_data['lead_time'].mean()) < 1e-10
         assert first_day_metrics['quantity_sum'].iloc[0] == first_day_data['quantity'].sum()
 
+class TestDataPreprocessing(unittest.TestCase):
+    
+    def setUp(self):
+        """Set up test data"""
+        # Create a sample DataFrame for testing
+        self.sample_data = pd.DataFrame({
+            'order_id': ['ORD123', 'ORD124', 'ORD125', 'ORD126', 'ORD127', 'ORD128'],
+            'product_id': ['P001', 'P002', 'P003', 'P001', 'P002', 'P003'],
+            'order_date': [
+                '2023-01-01', '2023-01-02', '2023-01-03', 
+                '2023-01-04', '2023-01-05', '2023-01-06'
+            ],
+            'delivery_date': [
+                '2023-01-05', '2023-01-08', '2023-01-09', 
+                '2023-01-10', '2023-01-12', None
+            ],
+            'quantity': [5, 10, 15, 20, 25, 30],
+            'price': [100.0, 200.0, 300.0, 400.0, 500.0, 600.0],
+            'supplier_id': ['S001', 'S002', 'S003', 'S001', 'S002', 'S003'],
+            'distributor_id': ['D001', 'D001', 'D002', 'D002', 'D003', 'D003'],
+            'retailer_id': ['R001', 'R002', 'R003', 'R001', 'R002', 'R003'],
+            'region': ['North', 'South', 'East', 'West', 'North', 'South']
+        })
+        
+        # Add duplicated row
+        self.sample_data_with_duplicates = pd.concat([
+            self.sample_data,
+            pd.DataFrame([self.sample_data.iloc[0].to_dict()])
+        ]).reset_index(drop=True)
+    
+    def test_clean_data_removes_duplicates(self):
+        """Test that clean_data removes duplicate rows"""
+        cleaned_df = clean_data(self.sample_data_with_duplicates)
+        self.assertEqual(len(cleaned_df), len(self.sample_data))
+    
+    def test_clean_data_converts_dates(self):
+        """Test that clean_data converts date columns to datetime"""
+        cleaned_df = clean_data(self.sample_data)
+        
+        # Check that date columns are now datetime
+        self.assertTrue(pd.api.types.is_datetime64_dtype(cleaned_df['order_date']))
+        self.assertTrue(pd.api.types.is_datetime64_dtype(cleaned_df['delivery_date']))
+    
+    def test_calculate_lead_times(self):
+        """Test that calculate_lead_times correctly calculates lead times"""
+        cleaned_df = clean_data(self.sample_data)
+        df_with_lead_times = calculate_lead_times(cleaned_df)
+        
+        # Check that lead_time column exists
+        self.assertIn('lead_time', df_with_lead_times.columns)
+        
+        # Check calculated lead times for specific rows
+        expected_lead_times = [4, 6, 6, 6, 7, np.nan]  # Last one is NaN due to missing delivery_date
+        for i, expected_lead_time in enumerate(expected_lead_times):
+            if pd.isna(expected_lead_time):
+                self.assertTrue(pd.isna(df_with_lead_times.iloc[i]['lead_time']))
+            else:
+                self.assertEqual(df_with_lead_times.iloc[i]['lead_time'], expected_lead_time)
+
 if __name__ == '__main__':
     # Run tests manually
     test_data = sample_data()
     test_clean_data(test_data)
     test_calculate_lead_times(test_data)
     test_aggregate_metrics(test_data)
-    print("All tests passed!") 
+    print("All tests passed!")
+    unittest.main() 

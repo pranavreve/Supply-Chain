@@ -1,0 +1,313 @@
+name: Supply Chain Application CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - production
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: supply-chain-app
+  PYTHON_VERSION: 3.9
+  DASHBOARD_PATH: dashboard
+  STACK_NAME: supply-chain-stack
+
+jobs:
+  lint-and-test:
+    name: Lint and Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+      
+      - name: Lint with flake8
+        run: |
+          flake8 src/ dashboard/ tests/ --count --select=E9,F63,F7,F82 --show-source --statistics
+          flake8 src/ dashboard/ tests/ --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+      
+      - name: Run static type checking with mypy
+        run: |
+          mypy src/ dashboard/
+      
+      - name: Run tests with pytest
+        run: |
+          pytest tests/ --cov=src --cov=dashboard --cov-report=xml
+      
+      - name: Upload test coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage.xml
+          fail_ci_if_error: false
+
+  build-and-push:
+    name: Build and Push Docker Image
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+      
+      - name: Set environment
+        id: set-env
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "ENVIRONMENT=${{ github.event.inputs.environment }}" >> $GITHUB_ENV
+          elif [ "${{ github.ref_name }}" == "main" ]; then
+            echo "ENVIRONMENT=production" >> $GITHUB_ENV
+          else
+            echo "ENVIRONMENT=dev" >> $GITHUB_ENV
+          fi
+          echo "IMAGE_TAG=${{ github.sha }}" >> $GITHUB_ENV
+      
+      - name: Build, tag, and push Dashboard image to Amazon ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest -f $DASHBOARD_PATH/Dockerfile .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "::set-output name=image::$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+      
+      - name: Save image info for deployment
+        run: |
+          echo "ECR_REGISTRY=${{ steps.login-ecr.outputs.registry }}" >> $GITHUB_ENV
+          echo "IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_ENV
+
+  deploy-infrastructure:
+    name: Deploy Infrastructure
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: ${{ env.ENVIRONMENT }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r deployment/requirements.txt
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Generate infrastructure config
+        run: |
+          cat > deployment/config/infrastructure-${{ env.ENVIRONMENT }}.yaml << EOF
+          aws_region: ${{ env.AWS_REGION }}
+          s3_bucket: supply-chain-app-${{ env.ENVIRONMENT }}
+          s3_public_access: false
+          local_assets_path: ./app
+          ecr_repository: ${{ env.ECR_REPOSITORY }}
+          create_rds: true
+          rds:
+            identifier: supply-chain-db-${{ env.ENVIRONMENT }}
+            db_name: supplychain
+            username: ${{ secrets.DB_USERNAME }}
+            password: ${{ secrets.DB_PASSWORD }}
+            instance_class: db.t3.micro
+            allocated_storage: 20
+          create_ecs: true
+          ecs_cluster: supply-chain-cluster-${{ env.ENVIRONMENT }}
+          deploy_cloudformation: true
+          cloudformation_stack: ${{ env.STACK_NAME }}-${{ env.ENVIRONMENT }}
+          cloudformation_template: deployment/cloudformation/main.yaml
+          cloudformation_parameters:
+            - key: Environment
+              value: ${{ env.ENVIRONMENT }}
+            - key: ImageUri
+              value: ${{ env.IMAGE_URI }}
+          EOF
+      
+      - name: Deploy AWS infrastructure
+        run: |
+          python deployment/deploy.py --config deployment/config/infrastructure-${{ env.ENVIRONMENT }}.yaml --environment ${{ env.ENVIRONMENT }}
+      
+      - name: Extract CloudFormation outputs
+        id: cloudformation
+        run: |
+          OUTPUTS_FILE=deployment/outputs/infrastructure-${{ env.ENVIRONMENT }}.json
+          if [ -f "$OUTPUTS_FILE" ]; then
+            DASHBOARD_URL=$(jq -r '.endpoints.DashboardUrl // ""' $OUTPUTS_FILE)
+            echo "DASHBOARD_URL=$DASHBOARD_URL" >> $GITHUB_ENV
+            API_URL=$(jq -r '.endpoints.ApiUrl // ""' $OUTPUTS_FILE)
+            echo "API_URL=$API_URL" >> $GITHUB_ENV
+            echo "Deployed Dashboard URL: $DASHBOARD_URL"
+            echo "Deployed API URL: $API_URL"
+          else
+            echo "Outputs file not found: $OUTPUTS_FILE"
+            exit 1
+          fi
+
+  run-data-validation:
+    name: Run Data Validation
+    needs: deploy-infrastructure
+    runs-on: ubuntu-latest
+    environment: ${{ env.ENVIRONMENT }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Run data validation
+        run: |
+          python src/data/validation.py --data-path data --report-path reports/validation_report.json
+      
+      - name: Upload validation report as artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: validation-report-${{ env.ENVIRONMENT }}
+          path: reports/validation_report.json
+          retention-days: 30
+
+  notify:
+    name: Send Deployment Notification
+    needs: [deploy-infrastructure, run-data-validation]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Deployment status
+        id: deployment-status
+        run: |
+          if [ "${{ needs.deploy-infrastructure.result }}" == "success" ] && [ "${{ needs.run-data-validation.result }}" == "success" ]; then
+            echo "STATUS=success" >> $GITHUB_ENV
+            echo "MESSAGE=🚀 Successfully deployed to ${{ env.ENVIRONMENT }} environment." >> $GITHUB_ENV
+          else
+            echo "STATUS=failure" >> $GITHUB_ENV
+            echo "MESSAGE=❌ Deployment to ${{ env.ENVIRONMENT }} environment failed." >> $GITHUB_ENV
+          fi
+      
+      - name: Send Slack notification
+        if: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          payload: |
+            {
+              "text": "${{ env.MESSAGE }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "${{ env.MESSAGE }}"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Environment:*\n${{ env.ENVIRONMENT }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Triggered by:*\n${{ github.actor }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Dashboard URL:*\n${{ env.DASHBOARD_URL || 'N/A' }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*API URL:*\n${{ env.API_URL || 'N/A' }}"
+                    }
+                  ]
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": {
+                        "type": "plain_text",
+                        "text": "View Workflow"
+                      },
+                      "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+      
+      - name: Send email notification
+        if: ${{ secrets.EMAIL_NOTIFICATION_RECIPIENTS != '' }}
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.EMAIL_SERVER_ADDRESS }}
+          server_port: ${{ secrets.EMAIL_SERVER_PORT }}
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_PASSWORD }}
+          subject: "Supply Chain App Deployment Status: ${{ env.STATUS == 'success' && 'Success' || 'Failed' }}"
+          body: |
+            Deployment Status: ${{ env.STATUS == 'success' && 'Success' || 'Failed' }}
+            Environment: ${{ env.ENVIRONMENT }}
+            Dashboard URL: ${{ env.DASHBOARD_URL || 'N/A' }}
+            API URL: ${{ env.API_URL || 'N/A' }}
+            Triggered by: ${{ github.actor }}
+            
+            View Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          to: ${{ secrets.EMAIL_NOTIFICATION_RECIPIENTS }}
+          from: Supply Chain App CI/CD 

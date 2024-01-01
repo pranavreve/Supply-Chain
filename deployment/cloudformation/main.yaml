@@ -1,0 +1,487 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Supply Chain Analytics Infrastructure'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+    Description: Deployment environment
+
+  ProjectName:
+    Type: String
+    Default: supply-chain-analytics
+    Description: Project name used for resource naming
+
+Resources:
+  # IAM Roles
+  GlueServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: glue.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole'
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:PutObject'
+                  - 's3:DeleteObject'
+                  - 's3:ListBucket'
+                Resource:
+                  - !Sub 'arn:aws:s3:::${ProjectName}-${Environment}-*'
+                  - !Sub 'arn:aws:s3:::${ProjectName}-${Environment}-*/*'
+
+  LambdaServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:PutObject'
+                  - 's3:ListBucket'
+                Resource:
+                  - !Sub 'arn:aws:s3:::${ProjectName}-${Environment}-*'
+                  - !Sub 'arn:aws:s3:::${ProjectName}-${Environment}-*/*'
+
+  # S3 Buckets
+  RawZoneBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-raw-zone'
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionToGlacier
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: 90
+                StorageClass: GLACIER
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  ProcessedZoneBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-processed-zone'
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  CuratedZoneBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-curated-zone'
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  AnalyticsZoneBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-analytics-zone'
+      VersioningConfiguration:
+        Status: Enabled
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+    
+  AnalyticsZoneBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AnalyticsZoneBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action:
+              - 's3:GetObject'
+            Effect: Allow
+            Resource: !Sub 'arn:aws:s3:::${ProjectName}-${Environment}-analytics-zone/*'
+            Principal: '*'
+
+  # Glue Resources
+  SupplyChainDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Sub '${ProjectName}_${Environment}_db'
+        Description: 'Database for Supply Chain Analytics'
+
+  RawZoneCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-raw-crawler'
+      Role: !GetAtt GlueServiceRole.Arn
+      DatabaseName: !Ref SupplyChainDatabase
+      Targets:
+        S3Targets:
+          - Path: !Sub 's3://${ProjectName}-${Environment}-raw-zone/'
+      Schedule:
+        ScheduleExpression: 'cron(0 0 * * ? *)'
+      SchemaChangePolicy:
+        UpdateBehavior: 'UPDATE_IN_DATABASE'
+        DeleteBehavior: 'LOG'
+      Configuration: '{"Version":1.0,"CrawlerOutput":{"Partitions":{"AddOrUpdateBehavior":"InheritFromTable"}}}'
+
+  ProcessedZoneCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-processed-crawler'
+      Role: !GetAtt GlueServiceRole.Arn
+      DatabaseName: !Ref SupplyChainDatabase
+      Targets:
+        S3Targets:
+          - Path: !Sub 's3://${ProjectName}-${Environment}-processed-zone/'
+      Schedule:
+        ScheduleExpression: 'cron(0 1 * * ? *)'
+      SchemaChangePolicy:
+        UpdateBehavior: 'UPDATE_IN_DATABASE'
+        DeleteBehavior: 'LOG'
+      Configuration: '{"Version":1.0,"CrawlerOutput":{"Partitions":{"AddOrUpdateBehavior":"InheritFromTable"}}}'
+
+  # Lambda Functions
+  DataCleaningFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-data-cleaning'
+      Runtime: python3.9
+      Handler: data_cleaning.handler
+      Role: !GetAtt LambdaServiceRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import pandas as pd
+          import io
+          import os
+          
+          def handler(event, context):
+              """Lambda function to clean and transform supply chain data"""
+              # Get bucket and key from event
+              bucket = event['Records'][0]['s3']['bucket']['name']
+              key = event['Records'][0]['s3']['object']['key']
+              
+              # Set up S3 client
+              s3 = boto3.client('s3')
+              
+              # Read the CSV file from S3
+              obj = s3.get_object(Bucket=bucket, Key=key)
+              df = pd.read_csv(io.BytesIO(obj['Body'].read()))
+              
+              # Clean the data
+              # Remove duplicates
+              df = df.drop_duplicates()
+              
+              # Convert date columns
+              date_columns = [col for col in df.columns if 'date' in col.lower()]
+              for col in date_columns:
+                  df[col] = pd.to_datetime(df[col])
+              
+              # Additional cleaning logic here...
+              
+              # Determine output path
+              output_bucket = bucket.replace('raw', 'processed')
+              output_key = key
+              
+              # Write the cleaned data back to S3
+              csv_buffer = io.StringIO()
+              df.to_csv(csv_buffer, index=False)
+              s3.put_object(
+                  Bucket=output_bucket,
+                  Key=output_key,
+                  Body=csv_buffer.getvalue()
+              )
+              
+              return {
+                  'statusCode': 200,
+                  'body': f'Successfully processed {key}'
+              }
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          LOG_LEVEL: INFO
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # S3 Event Trigger for Lambda
+  S3LambdaTrigger:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt DataCleaningFunction.Arn
+      Action: 'lambda:InvokeFunction'
+      Principal: 's3.amazonaws.com'
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Sub 'arn:aws:s3:::${ProjectName}-${Environment}-raw-zone'
+
+  S3BucketNotification:
+    Type: AWS::S3::BucketNotification
+    Properties:
+      Bucket: !Ref RawZoneBucket
+      LambdaConfigurations:
+        - Event: 's3:ObjectCreated:*'
+          Filter:
+            S3Key:
+              Rules:
+                - Name: suffix
+                  Value: .csv
+          Function: !GetAtt DataCleaningFunction.Arn
+
+  # API Gateway for Dashboard Data
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-api'
+      Description: 'API for Supply Chain Analytics Dashboard'
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  ApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: 'data'
+
+  ApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref ApiResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:s3:path/${ProjectName}-${Environment}-analytics-zone/dashboard/{key}'
+        Credentials: !GetAtt ApiGatewayRole.Arn
+        RequestParameters:
+          integration.request.path.key: 'method.request.querystring.key'
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Content-Type: 'integration.response.header.Content-Type'
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      RequestParameters:
+        method.request.querystring.key: true
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Content-Type: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  ApiGatewayRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                Resource: !Sub 'arn:aws:s3:::${ProjectName}-${Environment}-analytics-zone/*'
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: ApiMethod
+    Properties:
+      RestApiId: !Ref ApiGateway
+      StageName: !Ref Environment
+
+  # Glue ETL Job
+  SupplyChainETLJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-etl-job'
+      Role: !GetAtt GlueServiceRole.Arn
+      Command:
+        Name: glueetl
+        ScriptLocation: !Sub 's3://${ProjectName}-${Environment}-analytics-zone/scripts/etl_job.py'
+      DefaultArguments:
+        '--job-language': 'python'
+        '--enable-metrics': ''
+        '--enable-continuous-cloudwatch-log': 'true'
+        '--source_database': !Ref SupplyChainDatabase
+        '--target_bucket': !Sub '${ProjectName}-${Environment}-curated-zone'
+      ExecutionProperty:
+        MaxConcurrentRuns: 2
+      MaxRetries: 2
+      Timeout: 60
+      GlueVersion: '3.0'
+
+  # CloudWatch Dashboard for Monitoring
+  MonitoringDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${ProjectName}-${Environment}-monitoring'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/Lambda", "Invocations", "FunctionName", "${ProjectName}-${Environment}-data-cleaning" ],
+                  [ ".", "Errors", ".", "." ],
+                  [ ".", "Duration", ".", ".", { "stat": "Average" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Lambda Function Metrics",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/S3", "BucketSizeBytes", "BucketName", "${ProjectName}-${Environment}-raw-zone", "StorageType", "StandardStorage" ],
+                  [ "...", "${ProjectName}-${Environment}-processed-zone", ".", "." ],
+                  [ "...", "${ProjectName}-${Environment}-curated-zone", ".", "." ],
+                  [ "...", "${ProjectName}-${Environment}-analytics-zone", ".", "." ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "S3 Bucket Size",
+                "period": 86400
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/Glue", "JobRunStatus", "JobName", "${ProjectName}-${Environment}-etl-job", "JobRunState", "SUCCEEDED", { "stat": "SampleCount" } ],
+                  [ "...", "FAILED", { "stat": "SampleCount" } ],
+                  [ "...", "TIMEOUT", { "stat": "SampleCount" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": true,
+                "region": "${AWS::Region}",
+                "title": "Glue Job Status",
+                "period": 86400
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/ApiGateway", "Count", "ApiName", "${ProjectName}-${Environment}-api" ],
+                  [ ".", "Latency", ".", "." ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "API Gateway Metrics",
+                "period": 300
+              }
+            }
+          ]
+        }
+
+Outputs:
+  RawZoneBucketName:
+    Description: 'Raw Zone S3 Bucket'
+    Value: !Ref RawZoneBucket
+    
+  ProcessedZoneBucketName:
+    Description: 'Processed Zone S3 Bucket'
+    Value: !Ref ProcessedZoneBucket
+    
+  CuratedZoneBucketName:
+    Description: 'Curated Zone S3 Bucket'
+    Value: !Ref CuratedZoneBucket
+    
+  AnalyticsZoneBucketName:
+    Description: 'Analytics Zone S3 Bucket'
+    Value: !Ref AnalyticsZoneBucket
+    
+  DashboardURL:
+    Description: 'URL for the Analytics Dashboard'
+    Value: !Sub 'http://${ProjectName}-${Environment}-analytics-zone.s3-website-${AWS::Region}.amazonaws.com'
+    
+  ApiEndpoint:
+    Description: 'API Gateway Endpoint'
+    Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+    
+  GlueDatabase:
+    Description: 'Glue Database Name'
+    Value: !Ref SupplyChainDatabase
+    
+  MonitoringDashboardURL:
+    Description: 'CloudWatch Monitoring Dashboard URL'
+    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${ProjectName}-${Environment}-monitoring' 
